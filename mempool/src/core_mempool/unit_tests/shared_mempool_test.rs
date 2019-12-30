@@ -7,7 +7,7 @@ use assert_matches;
 use channel;
 use futures::{
     channel::{
-        mpsc::{unbounded, UnboundedReceiver},
+        mpsc::{self, unbounded, UnboundedReceiver},
         oneshot,
     },
     executor::block_on,
@@ -132,13 +132,15 @@ impl SharedMempoolNetwork {
             let network_sender = MempoolNetworkSender::new(network_reqs_tx);
             let network_events = MempoolNetworkEvents::new(network_notifs_rx);
             let (sender, subscriber) = unbounded();
+            let (_ac_sender, smp_receiver) = mpsc::channel(1_024);
 
             config.validator_network = Some(validator_network_config);
             let runtime = start_shared_mempool(
                 &config,
                 Arc::clone(&mempool),
                 network_sender,
-                network_events,
+                vec![network_events],
+                smp_receiver,
                 Arc::new(MockStorageReadClient),
                 Arc::new(MockVMValidator),
                 vec![sender],

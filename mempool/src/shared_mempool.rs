@@ -5,6 +5,12 @@ use crate::{
     core_mempool::{CoreMempool, TimelineState},
     counters,
 };
+use admission_control_proto::{
+    proto::admission_control::{
+        submit_transaction_response::Status, SubmitTransactionRequest, SubmitTransactionResponse,
+    },
+    AdmissionControlStatus,
+};
 use anyhow::{format_err, Result};
 use bounded_executor::BoundedExecutor;
 use bytes05::Bytes;
@@ -14,16 +20,28 @@ use channel::{
     message_queues::QueueStyle,
 };
 use futures::{
-    channel::{mpsc::UnboundedSender, oneshot},
+    channel::{
+        mpsc::{self, UnboundedSender},
+        oneshot,
+    },
     executor::ThreadPool,
     future::join_all,
+    stream::select_all,
     StreamExt,
 };
 use libra_config::config::{MempoolConfig, NodeConfig};
 use libra_logger::prelude::*;
-use libra_mempool_shared_proto::proto::mempool_status::MempoolAddTransactionStatusCode;
+use libra_mempool_shared_proto::proto::mempool_status::{
+    MempoolAddTransactionStatus as MempoolAddTransactionStatusProto,
+    MempoolAddTransactionStatusCode,
+};
 use libra_prost_ext::MessageExt;
-use libra_types::{transaction::SignedTransaction, PeerId};
+use libra_types::{
+    proto::types::VmStatus as VmStatusProto,
+    transaction::SignedTransaction,
+    vm_error::{StatusCode::RESOURCE_DOES_NOT_EXIST, VMStatus},
+    PeerId,
+};
 use network::{
     proto::{
         BroadcastTransactionsRequest, BroadcastTransactionsResponse,
@@ -296,15 +314,130 @@ where
     Ok(response)
 }
 
+/// Validate transaction signature, then via VM, and add it to Mempool if it passes VM check.
+async fn submit_transaction_to_mempool<V>(
+    smp: SharedMempool<V>,
+    req: SubmitTransactionRequest,
+) -> Result<SubmitTransactionResponse>
+where
+    V: TransactionValidation,
+{
+    let txn_proto = req.transaction.clone().unwrap_or_else(Default::default);
+
+    let transaction = match SignedTransaction::try_from(txn_proto.clone()) {
+        Ok(t) => t,
+        Err(e) => {
+            security_log(SecurityEvent::InvalidTransactionAC)
+                .error(&e)
+                .data(&txn_proto)
+                .log();
+            let mut response = SubmitTransactionResponse::default();
+            response.status = Some(Status::AcStatus(
+                AdmissionControlStatus::Rejected("submit txn rejected".to_string()).into(),
+            ));
+            return Ok(response);
+        }
+    };
+
+    let gas_cost = transaction.max_gas_amount();
+    let validation_status = smp
+        .validator
+        .validate_transaction(transaction.clone())
+        .await
+        .map_err(|e| {
+            security_log(SecurityEvent::InvalidTransactionAC)
+                .error(&e)
+                .data(&transaction)
+                .log();
+            e
+        })?;
+
+    if let Some(validation_status) = validation_status {
+        let mut response = SubmitTransactionResponse::default();
+        debug!(
+            "txn failed in vm validation, status: {:?}, txn: {:?}",
+            validation_status, transaction
+        );
+        response.status = Some(Status::VmStatus(validation_status.into()));
+        return Ok(response);
+    }
+    let sender = transaction.sender();
+    let account_state = get_account_state(smp.storage_read_client.clone(), sender).await;
+
+    let mut mempool = smp
+        .mempool
+        .lock()
+        .expect("[shared mempool] failed to acquire mempool lock");
+
+    let mut response = SubmitTransactionResponse::default();
+    if let Ok((sequence_number, balance)) = account_state {
+        let mempool_status = mempool.add_txn(
+            transaction,
+            gas_cost,
+            balance,
+            sequence_number,
+            TimelineState::NotReady,
+        );
+        if mempool_status.code == MempoolAddTransactionStatusCode::Valid {
+            response.status = Some(Status::AcStatus(AdmissionControlStatus::Accepted.into()));
+        } else {
+            response.status = Some(Status::MempoolStatus(
+                MempoolAddTransactionStatusProto::from(mempool_status),
+            ));
+        }
+    } else {
+        response.status = Some(Status::VmStatus(VmStatusProto::from(
+            VMStatus::new(RESOURCE_DOES_NOT_EXIST)
+                .with_message("[shared mempool] failed to get account state".to_string()),
+        )));
+    }
+    Ok(response)
+}
+
+/// Submits transaction from AC client to local mempool, and returns callback response
+/// regarding txn submission to AC client
+async fn submit_ac_client_transaction<V>(
+    smp: SharedMempool<V>,
+    request: SubmitTransactionRequest,
+    callback: oneshot::Sender<Result<SubmitTransactionResponse>>,
+) where
+    V: TransactionValidation,
+{
+    let resp = submit_transaction_to_mempool(smp.clone(), request).await;
+    match resp {
+        Ok(response) => {
+            if let Err(e) = callback
+                .send(Ok(response))
+                .map_err(|_| format_err!("[shared mempool] handling AC client RPC call timed out"))
+            {
+                error!("[shared mempool] failed to send back transaction submission result with error: {:?}", e);
+            }
+        }
+        Err(e) => {
+            error!(
+                "[shared mempool] Error occurred in submitting AC client transactions to local mempool: {:?}",
+                e
+            );
+
+            // TODO format error for this and send it to callback as well
+        }
+    }
+}
+
 /// This task handles inbound network events.
 async fn inbound_network_task<V>(
     smp: SharedMempool<V>,
     executor: Handle,
-    mut network_events: MempoolNetworkEvents,
+    network_events: Vec<MempoolNetworkEvents>,
+    mut client_events: mpsc::Receiver<(
+        SubmitTransactionRequest,
+        oneshot::Sender<Result<SubmitTransactionResponse>>,
+    )>,
 ) where
     V: TransactionValidation,
 {
     let mut peer_info: PeerInfo = HashMap::new();
+    let mut events = select_all(network_events).fuse();
     let subscribers = smp.subscribers.clone();
 
     // Use a BoundedExecutor to restrict only `workers_available` concurrent
@@ -320,8 +453,18 @@ async fn inbound_network_task<V>(
     let batch_size = smp.config.shared_mempool_batch_size;
     loop {
         ::futures::select! {
+            // client events
+            (mut msg, callback) = client_events.select_next_some() => {
+                    bounded_executor
+                        .spawn(submit_ac_client_transaction(
+                            smp.clone(),
+                            msg,
+                            callback,
+                        ))
+                        .await;
+            },
             // network events
-            maybe_network_event = network_events.next() => {
+            maybe_network_event = events.next() => {
                 match maybe_network_event {
                     None => {
                         // TODO log termination of network events stream
@@ -676,7 +819,11 @@ pub(crate) fn start_shared_mempool<V>(
     config: &NodeConfig,
     mempool: Arc<Mutex<CoreMempool>>,
     network_sender: MempoolNetworkSender,
-    network_events: MempoolNetworkEvents,
+    network_events: Vec<MempoolNetworkEvents>,
+    ac_client_events: mpsc::Receiver<(
+        SubmitTransactionRequest,
+        oneshot::Sender<Result<SubmitTransactionResponse>>,
+    )>,
     storage_read_client: Arc<dyn StorageRead>,
     validator: Arc<V>,
     subscribers: Vec<UnboundedSender<SharedMempoolNotification>>,
@@ -713,7 +860,12 @@ where
         subscribers,
     };
 
-    executor.spawn(inbound_network_task(smp, executor.clone(), network_events));
+    executor.spawn(inbound_network_task(
+        smp,
+        executor.clone(),
+        network_events,
+        ac_client_events,
+    ));
 
     executor.spawn(gc_task(
         mempool,
