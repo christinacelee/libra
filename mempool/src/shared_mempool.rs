@@ -374,8 +374,8 @@ where
         let mempool_status = mempool.add_txn(
             transaction,
             gas_cost,
-            balance,
             sequence_number,
+            balance,
             TimelineState::NotReady,
         );
         if mempool_status.code == MempoolAddTransactionStatusCode::Valid {
@@ -403,24 +403,30 @@ async fn submit_ac_client_transaction<V>(
 ) where
     V: TransactionValidation,
 {
-    let resp = submit_transaction_to_mempool(smp.clone(), request).await;
-    match resp {
-        Ok(response) => {
-            if let Err(e) = callback
-                .send(Ok(response))
-                .map_err(|_| format_err!("[shared mempool] handling AC client RPC call timed out"))
-            {
-                error!("[shared mempool] failed to send back transaction submission result with error: {:?}", e);
-            }
-        }
+    let response = match submit_transaction_to_mempool(smp.clone(), request).await {
+        Ok(resp) => resp,
         Err(e) => {
             error!(
                 "[shared mempool] Error occurred in submitting AC client transactions to local mempool: {:?}",
                 e
             );
 
-            // TODO format error for this and send it to callback as well
+            let mut resp = SubmitTransactionResponse::default();
+            resp.status = Some(Status::AcStatus(
+                AdmissionControlStatus::UnexpectedError.into(),
+            ));
+            resp
         }
+    };
+
+    if let Err(e) = callback
+        .send(Ok(response))
+        .map_err(|_| format_err!("[shared mempool] handling AC client RPC call timed out"))
+    {
+        error!(
+            "[shared mempool] failed to send back transaction submission result with error: {:?}",
+            e
+        );
     }
 }
 

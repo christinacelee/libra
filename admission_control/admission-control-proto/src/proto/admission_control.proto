@@ -42,6 +42,8 @@ enum AdmissionControlStatusCode {
   Blacklisted = 1;
   // The transaction is rejected, e.g. due to incorrect signature.
   Rejected = 2;
+  // Unexpected error occurred when handling SubmitTransactionRequest,
+  UnexpectedError = 3;
 }
 
 // The response for transaction submission.

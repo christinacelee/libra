@@ -20,6 +20,8 @@ pub enum AdmissionControlStatus {
     Blacklisted(String),
     /// The transaction is rejected, e.g. due to incorrect signature.
     Rejected(String),
+    /// An unexpected error occurred when processing the transaction.
+    UnexpectedError,
 }
 
 impl TryFrom<crate::proto::admission_control::AdmissionControlStatus> for AdmissionControlStatus {
@@ -37,6 +39,7 @@ impl TryFrom<crate::proto::admission_control::AdmissionControlStatus> for Admiss
                 let msg = proto.message;
                 AdmissionControlStatus::Rejected(msg)
             }
+            ProtoStatusCode::UnexpectedError => AdmissionControlStatus::UnexpectedError,
         };
         Ok(ret)
     }
@@ -57,6 +60,9 @@ impl From<AdmissionControlStatus> for crate::proto::admission_control::Admission
             AdmissionControlStatus::Rejected(msg) => {
                 admission_control_status.message = msg;
                 admission_control_status.set_code(ProtoStatusCode::Rejected)
+            }
+            AdmissionControlStatus::UnexpectedError => {
+                admission_control_status.set_code(ProtoStatusCode::UnexpectedError)
             }
         }
         admission_control_status
