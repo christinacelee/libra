@@ -24,6 +24,26 @@ use lru_cache::LruCache;
 use std::{cmp::max, collections::HashSet, convert::TryFrom};
 use ttl_cache::TtlCache;
 
+pub trait MempoolTrait: Send {
+    /// Used to add a transaction to the Mempool
+    /// Performs basic validation: checks account's balance and sequence number
+    fn add_txn(
+        &mut self,
+        _txn: SignedTransaction,
+        _gas_amount: u64,
+        _db_sequence_number: u64,
+        _balance: u64,
+        _timeline_state: TimelineState,
+    ) -> MempoolAddTransactionStatus;
+
+    /// Read `count` transactions from timeline since `timeline_id`
+    /// Returns block of transactions and new last_timeline_id
+    fn read_timeline(&mut self, _timeline_id: u64, _count: usize) -> (Vec<SignedTransaction>, u64);
+
+    /// TTL based garbage collection. Remove all transactions that got expired
+    fn gc_by_system_ttl(&mut self);
+}
+
 pub struct Mempool {
     // stores metadata of all transactions in mempool (of all states)
     transactions: TransactionStore,
@@ -38,7 +58,7 @@ pub struct Mempool {
 }
 
 impl Mempool {
-    pub(crate) fn new(config: &NodeConfig) -> Self {
+    pub fn new(config: &NodeConfig) -> Self {
         Mempool {
             transactions: TransactionStore::new(&config.mempool),
             sequence_number_cache: LruCache::new(config.mempool.capacity),
@@ -96,71 +116,6 @@ impl Mempool {
 
     fn get_required_balance(&mut self, txn: &SignedTransaction, gas_amount: u64) -> u64 {
         txn.gas_unit_price() * gas_amount + self.transactions.get_required_balance(&txn.sender())
-    }
-
-    /// Used to add a transaction to the Mempool
-    /// Performs basic validation: checks account's balance and sequence number
-    pub(crate) fn add_txn(
-        &mut self,
-        txn: SignedTransaction,
-        gas_amount: u64,
-        db_sequence_number: u64,
-        balance: u64,
-        timeline_state: TimelineState,
-    ) -> MempoolAddTransactionStatus {
-        debug!(
-            "[Mempool] Adding transaction to mempool: {}:{}:{}",
-            &txn.sender(),
-            txn.sequence_number(),
-            db_sequence_number,
-        );
-
-        let required_balance = self.get_required_balance(&txn, gas_amount);
-        if balance < required_balance {
-            return MempoolAddTransactionStatus::new(
-                MempoolAddTransactionStatusCode::InsufficientBalance,
-                format!(
-                    "balance: {}, required_balance: {}, gas_amount: {}",
-                    balance, required_balance, gas_amount
-                ),
-            );
-        }
-
-        let cached_value = self.sequence_number_cache.get_mut(&txn.sender());
-        let sequence_number =
-            cached_value.map_or(db_sequence_number, |value| max(*value, db_sequence_number));
-        self.sequence_number_cache
-            .insert(txn.sender(), sequence_number);
-
-        // don't accept old transactions (e.g. seq is less than account's current seq_number)
-        if txn.sequence_number() < sequence_number {
-            return MempoolAddTransactionStatus::new(
-                MempoolAddTransactionStatusCode::InvalidSeqNumber,
-                format!(
-                    "transaction sequence number is {}, current sequence number is  {}",
-                    txn.sequence_number(),
-                    sequence_number,
-                ),
-            );
-        }
-
-        let expiration_time = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("init timestamp failure")
-            + self.system_transaction_timeout;
-        if timeline_state != TimelineState::NonQualified {
-            self.metrics_cache.insert(
-                (txn.sender(), txn.sequence_number()),
-                Utc::now().timestamp_millis(),
-                Duration::from_secs(100),
-            );
-        }
-
-        let txn_info = MempoolTransaction::new(txn, expiration_time, gas_amount, timeline_state);
-
-        let status = self.transactions.insert(txn_info, sequence_number);
-        OP_COUNTERS.inc(&format!("insert.{:?}", status));
-        status
     }
 
     /// Fetches next block of transactions for consensus
@@ -229,28 +184,87 @@ impl Mempool {
         block
     }
 
-    /// TTL based garbage collection. Remove all transactions that got expired
-    pub(crate) fn gc_by_system_ttl(&mut self) {
-        self.transactions.gc_by_system_ttl();
-    }
-
     /// Garbage collection based on client-specified expiration time
     pub(crate) fn gc_by_expiration_time(&mut self, block_time: Duration) {
         self.transactions.gc_by_expiration_time(block_time);
     }
 
-    /// Read `count` transactions from timeline since `timeline_id`
-    /// Returns block of transactions and new last_timeline_id
-    pub(crate) fn read_timeline(
-        &mut self,
-        timeline_id: u64,
-        count: usize,
-    ) -> (Vec<SignedTransaction>, u64) {
-        self.transactions.read_timeline(timeline_id, count)
-    }
-
     /// Check the health of core mempool.
     pub(crate) fn health_check(&self) -> bool {
         self.transactions.health_check()
+    }
+}
+
+impl MempoolTrait for Mempool {
+    fn add_txn(
+        &mut self,
+        txn: SignedTransaction,
+        gas_amount: u64,
+        db_sequence_number: u64,
+        balance: u64,
+        timeline_state: TimelineState,
+    ) -> MempoolAddTransactionStatus {
+        debug!(
+            "[Mempool] Adding transaction to mempool: {}:{}:{}",
+            &txn.sender(),
+            txn.sequence_number(),
+            db_sequence_number,
+        );
+
+        let required_balance = self.get_required_balance(&txn, gas_amount);
+        if balance < required_balance {
+            return MempoolAddTransactionStatus::new(
+                MempoolAddTransactionStatusCode::InsufficientBalance,
+                format!(
+                    "balance: {}, required_balance: {}, gas_amount: {}",
+                    balance, required_balance, gas_amount
+                ),
+            );
+        }
+
+        let cached_value = self.sequence_number_cache.get_mut(&txn.sender());
+        let sequence_number =
+            cached_value.map_or(db_sequence_number, |value| max(*value, db_sequence_number));
+        self.sequence_number_cache
+            .insert(txn.sender(), sequence_number);
+
+        // don't accept old transactions (e.g. seq is less than account's current seq_number)
+        if txn.sequence_number() < sequence_number {
+            return MempoolAddTransactionStatus::new(
+                MempoolAddTransactionStatusCode::InvalidSeqNumber,
+                format!(
+                    "transaction sequence number is {}, current sequence number is  {}",
+                    txn.sequence_number(),
+                    sequence_number,
+                ),
+            );
+        }
+
+        let expiration_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("init timestamp failure")
+            + self.system_transaction_timeout;
+        if timeline_state != TimelineState::NonQualified {
+            self.metrics_cache.insert(
+                (txn.sender(), txn.sequence_number()),
+                Utc::now().timestamp_millis(),
+                Duration::from_secs(100),
+            );
+        }
+
+        let txn_info = MempoolTransaction::new(txn, expiration_time, gas_amount, timeline_state);
+
+        let status = self.transactions.insert(txn_info, sequence_number);
+        OP_COUNTERS.inc(&format!("insert.{:?}", status));
+        status
+    }
+
+    fn read_timeline(&mut self, timeline_id: u64, count: usize) -> (Vec<SignedTransaction>, u64) {
+        self.transactions.read_timeline(timeline_id, count)
+    }
+
+    /// TTL based garbage collection. Remove all transactions that got expired
+    fn gc_by_system_ttl(&mut self) {
+        self.transactions.gc_by_system_ttl();
     }
 }

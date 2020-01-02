@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{
-    core_mempool::{CoreMempool, TimelineState, TxnPointer},
+    core_mempool::{CoreMempool, MempoolTrait, TimelineState, TxnPointer},
     proto::mempool::{
         mempool_server::Mempool, AddTransactionWithValidationRequest,
         AddTransactionWithValidationResponse, CommitTransactionsRequest,
@@ -24,7 +24,6 @@ use std::{
     time::Duration,
 };
 
-#[derive(Clone)]
 pub(crate) struct MempoolService {
     pub(crate) core_mempool: Arc<Mutex<CoreMempool>>,
 }

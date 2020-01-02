@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #![forbid(unsafe_code)]
-#![deny(missing_docs)]
+//#![deny(missing_docs)]
 // Increase recursion limit to allow for use of select! macro.
 #![recursion_limit = "1024"]
 
@@ -62,11 +62,11 @@ extern crate prometheus;
 pub mod proto;
 pub use runtime::MempoolRuntime;
 
-mod core_mempool;
+pub mod core_mempool;
 mod counters;
 mod mempool_service;
 mod runtime;
-mod shared_mempool;
+pub mod shared_mempool;
 
 // module op counters
 use lazy_static::lazy_static;

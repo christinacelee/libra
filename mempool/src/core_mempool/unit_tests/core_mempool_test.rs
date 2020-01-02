@@ -6,7 +6,7 @@ use crate::core_mempool::{
         add_signed_txn, add_txn, add_txns_to_mempool, exist_in_metrics_cache, setup_mempool,
         TestTransaction,
     },
-    CoreMempool, TimelineState,
+    CoreMempool, MempoolTrait, TimelineState,
 };
 use libra_config::config::NodeConfig;
 use libra_mempool_shared_proto::proto::mempool_status::MempoolAddTransactionStatusCode;

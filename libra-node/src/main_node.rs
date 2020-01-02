@@ -206,7 +206,6 @@ pub fn setup_environment(node_config: &mut NodeConfig) -> LibraHandle {
     debug!("Executor setup in {} ms", instant.elapsed().as_millis());
     let mut network_runtimes = vec![];
     let mut state_sync_network_handles = vec![];
-    let mut ac_network_sender = None;
     let mut ac_network_events = vec![];
     let mut validator_network_provider = None;
     let mut mempool_network_sender = None;
@@ -218,7 +217,7 @@ pub fn setup_environment(node_config: &mut NodeConfig) -> LibraHandle {
             ProtocolId::from_static(STATE_SYNCHRONIZER_DIRECT_SEND_PROTOCOL),
         ]));
 
-        let (ac_sender, ac_events) =
+        let (_ac_sender, ac_events) =
             network_provider.add_admission_control(vec![ProtocolId::from_static(
                 ADMISSION_CONTROL_RPC_PROTOCOL,
             )]);
@@ -231,7 +230,6 @@ pub fn setup_environment(node_config: &mut NodeConfig) -> LibraHandle {
         mempool_network_events.push(mempool_events);
 
         validator_network_provider = Some((network.peer_id, runtime, network_provider));
-        ac_network_sender = Some(ac_sender);
         mempool_network_sender = Some(mempool_sender);
     }
 
@@ -242,7 +240,7 @@ pub fn setup_environment(node_config: &mut NodeConfig) -> LibraHandle {
             ProtocolId::from_static(STATE_SYNCHRONIZER_DIRECT_SEND_PROTOCOL),
         ]));
 
-        let (ac_sender, ac_events) =
+        let (_ac_sender, ac_events) =
             network_provider.add_admission_control(vec![ProtocolId::from_static(
                 ADMISSION_CONTROL_RPC_PROTOCOL,
             )]);
@@ -256,7 +254,6 @@ pub fn setup_environment(node_config: &mut NodeConfig) -> LibraHandle {
 
         let network = &node_config.full_node_networks[i];
         if node_config.is_upstream_network(network) {
-            ac_network_sender = Some(ac_sender);
             mempool_network_sender = Some(mempool_sender);
         }
         // Start the network provider.
@@ -282,12 +279,8 @@ pub fn setup_environment(node_config: &mut NodeConfig) -> LibraHandle {
         &node_config,
     );
     let (ac_client_sender, smp_receiver) = channel(AC_SMP_CHANNEL_BUFFER_SIZE);
-    let admission_control = AdmissionControlRuntime::bootstrap(
-        &node_config,
-        ac_network_sender.unwrap(),
-        ac_network_events,
-        ac_client_sender,
-    );
+    let admission_control =
+        AdmissionControlRuntime::bootstrap(&node_config, ac_network_events, ac_client_sender);
 
     // Initialize and start mempool.
     instant = Instant::now();

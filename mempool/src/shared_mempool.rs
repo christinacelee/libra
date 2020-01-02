@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 use crate::{
-    core_mempool::{CoreMempool, TimelineState},
+    core_mempool::{MempoolTrait, TimelineState},
     counters,
 };
 use admission_control_proto::{
@@ -119,7 +119,7 @@ struct SharedMempool<V>
 where
     V: TransactionValidation + 'static,
 {
-    mempool: Arc<Mutex<CoreMempool>>,
+    mempool: Arc<Mutex<dyn MempoolTrait>>,
     network_sender: MempoolNetworkSender,
     config: MempoolConfig,
     storage_read_client: Arc<dyn StorageRead>,
@@ -612,7 +612,7 @@ async fn inbound_network_task<V>(
 }
 
 /// GC all expired transactions by SystemTTL
-async fn gc_task(mempool: Arc<Mutex<CoreMempool>>, gc_interval_ms: u64) {
+async fn gc_task(mempool: Arc<Mutex<dyn MempoolTrait>>, gc_interval_ms: u64) {
     let mut interval = interval(Duration::from_millis(gc_interval_ms));
     while let Some(_interval) = interval.next().await {
         mempool
@@ -627,7 +627,7 @@ async fn worker<'a>(
     mut from_master: Receiver<i64, WorkerState>,
     to_master: Sender<PeerId, PeerSyncUpdate>,
     peer_id: PeerId,
-    mempool: &'a Arc<Mutex<CoreMempool>>,
+    mempool: &'a Arc<Mutex<dyn MempoolTrait>>,
     network_sender: &'a mut MempoolNetworkSender,
     timeline_id: u64,
     batch_size: usize,
@@ -706,7 +706,7 @@ async fn worker<'a>(
 }
 
 async fn broadcast_transactions(
-    mempool: &Arc<Mutex<CoreMempool>>,
+    mempool: &Arc<Mutex<dyn MempoolTrait>>,
     network_sender: &mut MempoolNetworkSender,
     mut to_master: Sender<PeerId, PeerSyncUpdate>,
     mut curr_timeline_id: u64,
@@ -821,9 +821,9 @@ fn calculate_backpressure(curr_backpressure_ms: i32) -> i32 {
 ///   - outbound_sync_task (task that periodically broadcasts transactions to peers)
 ///   - inbound_network_task (task that handles inbound mempool messages and network events)
 ///   - gc_task (task that performs GC of all expired transactions by SystemTTL)
-pub(crate) fn start_shared_mempool<V>(
+pub fn start_shared_mempool<V>(
     config: &NodeConfig,
-    mempool: Arc<Mutex<CoreMempool>>,
+    mempool: Arc<Mutex<dyn MempoolTrait>>,
     network_sender: MempoolNetworkSender,
     network_events: Vec<MempoolNetworkEvents>,
     ac_client_events: mpsc::Receiver<(
