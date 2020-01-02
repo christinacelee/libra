@@ -24,6 +24,9 @@ use lru_cache::LruCache;
 use std::{cmp::max, collections::HashSet, convert::TryFrom};
 use ttl_cache::TtlCache;
 
+/// Trait needed to be implemented by any Mempool that is used by `SharedMempool`.
+/// `MempoolTrait` serves as an interface used by `SharedMempool` to interact with any Mempool-like
+/// object that stores transactions
 pub trait MempoolTrait: Send {
     /// Used to add a transaction to the Mempool
     /// Performs basic validation: checks account's balance and sequence number

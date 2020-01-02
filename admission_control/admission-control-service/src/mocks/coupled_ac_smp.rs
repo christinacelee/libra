@@ -4,10 +4,7 @@
 use crate::admission_control_service::AdmissionControlService;
 use futures::channel::mpsc::{channel, unbounded};
 use libra_config::config::NodeConfig;
-use libra_mempool::{
-    core_mempool::{MempoolTrait, TimelineState},
-    shared_mempool::start_shared_mempool,
-};
+use libra_mempool::{start_shared_mempool, MempoolTrait, TimelineState};
 use libra_mempool_shared_proto::{
     proto::mempool_status::MempoolAddTransactionStatusCode, MempoolAddTransactionStatus,
 };

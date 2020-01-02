@@ -38,15 +38,17 @@ impl MempoolTransaction {
     }
 }
 
+/// State of a transaction
+/// Represents whether a transaction is or will be ready to be broadcast to other peers
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum TimelineState {
-    // transaction is ready for broadcast
-    // Associated integer represents it's position in log of such transactions
+    /// transaction is ready for broadcast
+    /// Associated integer represents its position in log of such transactions
     Ready(u64),
-    // transaction is not yet ready for broadcast
-    // but it might change in a future
+    /// transaction is not yet ready for broadcast
+    /// but it might change in a future
     NotReady,
-    // transaction will never be qualified for broadcasting
-    // currently we don't broadcast transactions originated on other peers
+    /// transaction will never be qualified for broadcasting
+    /// currently we don't broadcast transactions originated on other peers
     NonQualified,
 }
