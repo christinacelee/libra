@@ -30,8 +30,3 @@ mod counters;
 pub mod mocks;
 /// AC runtime to launch gRPC and network service
 pub mod runtime;
-/// Handler for sending transaction write requests upstream if needed
-pub mod upstream_proxy;
-
-use libra_types::account_address::AccountAddress;
-type PeerId = AccountAddress;

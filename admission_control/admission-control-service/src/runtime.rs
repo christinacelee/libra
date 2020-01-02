@@ -1,9 +1,7 @@
 // Copyright (c) The Libra Core Contributors
 // SPDX-License-Identifier: Apache-2.0
 
-use crate::{
-    admission_control_service::AdmissionControlService, upstream_proxy::process_network_messages,
-};
+use crate::admission_control_service::AdmissionControlService;
 use admission_control_proto::proto::admission_control::{
     admission_control_server::AdmissionControlServer, SubmitTransactionRequest,
     SubmitTransactionResponse,
@@ -12,8 +10,7 @@ use anyhow::Result;
 use futures::channel::{mpsc, oneshot};
 use grpcio::EnvBuilder;
 use libra_config::config::NodeConfig;
-use network::validator_network::AdmissionControlNetworkEvents;
-use std::{collections::HashMap, net::ToSocketAddrs, sync::Arc};
+use std::{net::ToSocketAddrs, sync::Arc};
 use storage_client::{StorageRead, StorageReadServiceClient};
 use tokio::runtime::{Builder, Runtime};
 
@@ -21,15 +18,12 @@ use tokio::runtime::{Builder, Runtime};
 pub struct AdmissionControlRuntime {
     /// gRPC server to serve request between client and AC
     _ac_service_rt: Runtime,
-    /// separate AC runtime
-    _upstream_proxy: Runtime,
 }
 
 impl AdmissionControlRuntime {
     /// setup Admission Control runtime
     pub fn bootstrap(
         config: &NodeConfig,
-        _network_events: Vec<AdmissionControlNetworkEvents>,
         ac_sender: mpsc::Sender<(
             SubmitTransactionRequest,
             oneshot::Sender<Result<SubmitTransactionResponse>>,
@@ -65,26 +59,8 @@ impl AdmissionControlRuntime {
                 .serve(addr),
         );
 
-        let upstream_proxy_runtime = Builder::new()
-            .thread_name("ac-upstream-proxy-")
-            .threaded_scheduler()
-            .enable_all()
-            .build()
-            .expect("[admission control] failed to create runtime");
-
-        let upstream_peer_ids = &config.state_sync.upstream_peers.upstream_peers;
-        let peer_info: HashMap<_, _> = upstream_peer_ids
-            .iter()
-            .map(|peer_id| (*peer_id, true))
-            .collect();
-
-        let executor = upstream_proxy_runtime.handle();
-
-        executor.spawn(process_network_messages(_network_events, peer_info));
-
         Self {
             _ac_service_rt: ac_service_rt,
-            _upstream_proxy: upstream_proxy_runtime,
         }
     }
 }

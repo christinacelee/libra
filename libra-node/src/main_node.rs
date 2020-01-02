@@ -206,7 +206,6 @@ pub fn setup_environment(node_config: &mut NodeConfig) -> LibraHandle {
     debug!("Executor setup in {} ms", instant.elapsed().as_millis());
     let mut network_runtimes = vec![];
     let mut state_sync_network_handles = vec![];
-    let mut ac_network_events = vec![];
     let mut validator_network_provider = None;
     let mut mempool_network_sender = None;
     let mut mempool_network_events = vec![];
@@ -216,12 +215,6 @@ pub fn setup_environment(node_config: &mut NodeConfig) -> LibraHandle {
         state_sync_network_handles.push(network_provider.add_state_synchronizer(vec![
             ProtocolId::from_static(STATE_SYNCHRONIZER_DIRECT_SEND_PROTOCOL),
         ]));
-
-        let (_ac_sender, ac_events) =
-            network_provider.add_admission_control(vec![ProtocolId::from_static(
-                ADMISSION_CONTROL_RPC_PROTOCOL,
-            )]);
-        ac_network_events.push(ac_events);
 
         let (mempool_sender, mempool_events) = network_provider.add_mempool(vec![
             ProtocolId::from_static(MEMPOOL_DIRECT_SEND_PROTOCOL),
@@ -239,12 +232,6 @@ pub fn setup_environment(node_config: &mut NodeConfig) -> LibraHandle {
         state_sync_network_handles.push(network_provider.add_state_synchronizer(vec![
             ProtocolId::from_static(STATE_SYNCHRONIZER_DIRECT_SEND_PROTOCOL),
         ]));
-
-        let (_ac_sender, ac_events) =
-            network_provider.add_admission_control(vec![ProtocolId::from_static(
-                ADMISSION_CONTROL_RPC_PROTOCOL,
-            )]);
-        ac_network_events.push(ac_events);
 
         let (mempool_sender, mempool_events) = network_provider.add_mempool(vec![
             ProtocolId::from_static(MEMPOOL_DIRECT_SEND_PROTOCOL),
@@ -279,8 +266,7 @@ pub fn setup_environment(node_config: &mut NodeConfig) -> LibraHandle {
         &node_config,
     );
     let (ac_client_sender, smp_receiver) = channel(AC_SMP_CHANNEL_BUFFER_SIZE);
-    let admission_control =
-        AdmissionControlRuntime::bootstrap(&node_config, ac_network_events, ac_client_sender);
+    let admission_control = AdmissionControlRuntime::bootstrap(&node_config, ac_client_sender);
 
     // Initialize and start mempool.
     instant = Instant::now();
