@@ -11,7 +11,7 @@ use executor::Executor;
 use futures::{channel::mpsc::channel, executor::block_on};
 use libra_config::config::{NetworkConfig, NodeConfig, RoleType};
 use libra_logger::prelude::*;
-use libra_mempool::MempoolRuntime;
+use libra_mempool::{MempoolNetworkType, MempoolRuntime};
 use libra_metrics::metric_server;
 use network::{
     validator_network::{
@@ -200,15 +200,20 @@ pub fn setup_environment(node_config: &mut NodeConfig) -> LibraHandle {
     let mut state_sync_network_handles = vec![];
     let mut ac_network_sender = None;
     let mut ac_network_events = vec![];
+    let mut mempool_network_handles = HashMap::new();
+    let mut mempool_validator_network_handles = vec![];
+    let mut mempool_full_node_network_handles = vec![];
     let mut validator_network_provider = None;
-    let mut mempool_network_sender = None;
-    let mut mempool_network_events = vec![];
 
     if let Some(network) = node_config.validator_network.as_mut() {
         let (runtime, mut network_provider) = setup_network(network, RoleType::Validator);
         state_sync_network_handles.push(network_provider.add_state_synchronizer(vec![
             ProtocolId::from_static(STATE_SYNCHRONIZER_DIRECT_SEND_PROTOCOL),
         ]));
+        mempool_validator_network_handles.push(
+            network_provider
+                .add_mempool(vec![ProtocolId::from_static(MEMPOOL_DIRECT_SEND_PROTOCOL)]),
+        );
 
         let (ac_sender, ac_events) =
             network_provider.add_admission_control(vec![ProtocolId::from_static(
@@ -216,13 +221,13 @@ pub fn setup_environment(node_config: &mut NodeConfig) -> LibraHandle {
             )]);
         ac_network_events.push(ac_events);
 
-        let (mempool_sender, mempool_events) = network_provider
-            .add_mempool(vec![ProtocolId::from_static(MEMPOOL_DIRECT_SEND_PROTOCOL)]);
-        mempool_network_events.push(mempool_events);
+        //        let (mempool_sender, mempool_events) = network_provider
+        //            .add_mempool(vec![ProtocolId::from_static(MEMPOOL_DIRECT_SEND_PROTOCOL)]);
+        //        mempool_network_events.push(mempool_events);
 
         validator_network_provider = Some((network.peer_id, runtime, network_provider));
         ac_network_sender = Some(ac_sender);
-        mempool_network_sender = Some(mempool_sender);
+        //        mempool_network_sender = Some(mempool_sender);
     }
 
     for i in 0..node_config.full_node_networks.len() {
@@ -232,20 +237,20 @@ pub fn setup_environment(node_config: &mut NodeConfig) -> LibraHandle {
             ProtocolId::from_static(STATE_SYNCHRONIZER_DIRECT_SEND_PROTOCOL),
         ]));
 
+        mempool_full_node_network_handles.push(
+            network_provider
+                .add_mempool(vec![ProtocolId::from_static(MEMPOOL_DIRECT_SEND_PROTOCOL)]),
+        );
+
         let (ac_sender, ac_events) =
             network_provider.add_admission_control(vec![ProtocolId::from_static(
                 ADMISSION_CONTROL_RPC_PROTOCOL,
             )]);
         ac_network_events.push(ac_events);
 
-        let (mempool_sender, mempool_events) = network_provider
-            .add_mempool(vec![ProtocolId::from_static(MEMPOOL_DIRECT_SEND_PROTOCOL)]);
-        mempool_network_events.push(mempool_events);
-
         let network = &node_config.full_node_networks[i];
         if node_config.is_upstream_network(network) {
             ac_network_sender = Some(ac_sender);
-            mempool_network_sender = Some(mempool_sender);
         }
         // Start the network provider.
         runtime.handle().spawn(network_provider.start());
@@ -277,11 +282,18 @@ pub fn setup_environment(node_config: &mut NodeConfig) -> LibraHandle {
         ac_endpoint_sender,
     );
 
+    mempool_network_handles.insert(
+        MempoolNetworkType::Validator,
+        mempool_validator_network_handles,
+    );
+    mempool_network_handles.insert(
+        MempoolNetworkType::FullNode,
+        mempool_full_node_network_handles,
+    );
     instant = Instant::now();
     let mempool = Some(MempoolRuntime::bootstrap(
         &node_config,
-        mempool_network_sender.unwrap(),
-        mempool_network_events,
+        mempool_network_handles,
         smp_receiver,
     ));
     debug!("Mempool started in {} ms", instant.elapsed().as_millis());

@@ -3,6 +3,7 @@
 
 use crate::{
     core_mempool::{unit_tests::common::TestTransaction, CoreMempool, TimelineState},
+    runtime::MempoolNetworkType,
     shared_mempool::{start_shared_mempool, SharedMempoolNotification, SyncEvent},
 };
 use channel;
@@ -127,13 +128,17 @@ impl SharedMempoolNetwork {
             let (sender, subscriber) = unbounded();
             let (timer_sender, timer_receiver) = unbounded();
             let (_ac_sender, smp_receiver) = mpsc::channel(1_024);
+            let mut network_handles = HashMap::new();
+            network_handles.insert(
+                MempoolNetworkType::Validator,
+                vec![(network_sender, network_events)],
+            );
 
             config.validator_network = Some(validator_network_config);
             let runtime = start_shared_mempool(
                 &config,
                 Arc::clone(&mempool),
-                network_sender,
-                vec![network_events],
+                network_handles,
                 smp_receiver,
                 Arc::new(MockStorageReadClient),
                 Arc::new(MockVMValidator),

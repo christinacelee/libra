@@ -57,7 +57,7 @@
 //! remain stuck in Mempool forever, even if Consensus doesn't make progress
 
 pub mod proto;
-pub use runtime::MempoolRuntime;
+pub use runtime::{MempoolNetworkType, MempoolRuntime};
 
 mod core_mempool;
 mod mempool_service;

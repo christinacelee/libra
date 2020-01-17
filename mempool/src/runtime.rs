@@ -13,12 +13,22 @@ use futures::channel::{mpsc::Receiver, oneshot};
 use libra_config::config::NodeConfig;
 use network::validator_network::{MempoolNetworkEvents, MempoolNetworkSender};
 use std::{
+    collections::HashMap,
     net::ToSocketAddrs,
     sync::{Arc, Mutex},
 };
 use storage_client::{StorageRead, StorageReadServiceClient};
 use tokio::runtime::{Builder, Runtime};
 use vm_validator::vm_validator::VMValidator;
+
+/// Markers for the types of networks mempool operates in
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub enum MempoolNetworkType {
+    /// Validator network
+    Validator,
+    /// Full node network
+    FullNode,
+}
 
 /// Handle for Mempool Runtime
 pub struct MempoolRuntime {
@@ -32,8 +42,10 @@ impl MempoolRuntime {
     /// setup Mempool runtime
     pub fn bootstrap(
         config: &NodeConfig,
-        network_sender: MempoolNetworkSender,
-        network_events: Vec<MempoolNetworkEvents>,
+        network_handles: HashMap<
+            MempoolNetworkType,
+            Vec<(MempoolNetworkSender, MempoolNetworkEvents)>,
+        >,
         ac_endpoint_listener: Receiver<(
             SubmitTransactionRequest,
             oneshot::Sender<Result<SubmitTransactionResponse>>,
@@ -62,8 +74,7 @@ impl MempoolRuntime {
         let shared_mempool = start_shared_mempool(
             config,
             mempool,
-            network_sender,
-            network_events,
+            network_handles,
             ac_endpoint_listener,
             storage_client,
             vm_validator,
