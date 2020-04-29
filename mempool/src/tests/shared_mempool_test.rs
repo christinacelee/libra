@@ -291,11 +291,14 @@ impl SharedMempoolNetwork {
         let first_peer_id = &recipients[0].0;
         let main_peer_id = self.peer_ids.get(first_peer_id).unwrap_or(first_peer_id);
         // emulate timer tick
-        self.timers
-            .get(main_peer_id)
-            .unwrap()
-            .unbounded_send(SyncEvent)
-            .unwrap();
+        let messages_count = recipients.iter().map(|(_peer, msg_cnt)| msg_cnt).sum();
+        for _ in 0..messages_count {
+            self.timers
+                .get(main_peer_id)
+                .unwrap()
+                .unbounded_send(SyncEvent)
+                .unwrap();
+        }
 
         let mut broadcasts = vec![];
 
@@ -347,15 +350,20 @@ impl SharedMempoolNetwork {
     }
 
     /// delivers next broadcast message from `peer`
-    fn deliver_message(&mut self, peer: &PeerId) -> (Vec<SignedTransaction>, PeerId) {
-        println!("delivering");
+    fn deliver_message(
+        &mut self,
+        peer: &PeerId,
+        num_messages: usize,
+    ) -> (Vec<SignedTransaction>, PeerId) {
         let main_peer_id = self.peer_ids.get(peer).unwrap_or(peer);
         // emulate timer tick
-        self.timers
-            .get(main_peer_id)
-            .unwrap()
-            .unbounded_send(SyncEvent)
-            .unwrap();
+        for _ in 0..num_messages {
+            self.timers
+                .get(main_peer_id)
+                .unwrap()
+                .unbounded_send(SyncEvent)
+                .unwrap();
+        }
 
         // await next message from node
         let network_reqs_rx = self.network_reqs_rxs.get_mut(peer).unwrap();
@@ -454,7 +462,7 @@ fn test_basic_flow() {
 
     for seq in 0..3 {
         // A attempts to send message
-        let transactions = smp.deliver_message(&peer_a).0;
+        let transactions = smp.deliver_message(&peer_a, 1).0;
         assert_eq!(transactions.get(0).unwrap().sequence_number(), seq);
     }
 }
@@ -485,12 +493,13 @@ fn test_metric_cache_ignore_shared_txns() {
     );
     for txn in txns.iter().take(3) {
         // Let peer_a share txns with peer_b
-        let (_transaction, rx_peer) = smp.deliver_message(&peer_a);
+        let (_transaction, rx_peer) = smp.deliver_message(&peer_a, 1);
         // Check if txns's creation timestamp exist in peer_b's metrics_cache.
         assert_eq!(smp.exist_in_metrics_cache(&rx_peer, txn), false);
     }
 }
 
+// fail
 #[test]
 fn test_interruption_in_sync() {
     let (mut smp, peers) = SharedMempoolNetwork::bootstrap_validator_network(3, 1);
@@ -513,8 +522,8 @@ fn test_interruption_in_sync() {
 
     // make sure it delivered first transaction to both nodes
     let mut peers = vec![
-        smp.deliver_message(&peer_a).1,
-        smp.deliver_message(&peer_a).1,
+        smp.deliver_message(&peer_a, 1).1,
+        smp.deliver_message(&peer_a, 1).1,
     ];
     peers.sort();
     let mut expected_peers = vec![*peer_b, *peer_c];
@@ -533,12 +542,12 @@ fn test_interruption_in_sync() {
 
     // only C receives following transactions
     smp.add_txns(&peer_a, vec![TestTransaction::new(1, 1, 1)]);
-    let (txn, peer_id) = smp.deliver_message(&peer_a);
+    let (txn, peer_id) = smp.deliver_message(&peer_a, 2);
     assert_eq!(peer_id, *peer_c);
     assert_eq!(txn.get(0).unwrap().sequence_number(), 1);
 
     smp.add_txns(&peer_a, vec![TestTransaction::new(1, 2, 1)]);
-    let (txn, peer_id) = smp.deliver_message(&peer_a);
+    let (txn, peer_id) = smp.deliver_message(&peer_a, 2);
     assert_eq!(peer_id, *peer_c);
     assert_eq!(txn.get(0).unwrap().sequence_number(), 2);
 
@@ -549,7 +558,7 @@ fn test_interruption_in_sync() {
     );
 
     // B should receive transaction 2
-    let (txn, peer_id) = smp.deliver_message(&peer_a);
+    let (txn, peer_id) = smp.deliver_message(&peer_a, 1);
     assert_eq!(peer_id, *peer_b);
     assert_eq!(txn.get(0).unwrap().sequence_number(), 1);
 }
@@ -567,14 +576,14 @@ fn test_ready_transactions() {
         &peer_a,
         ConnectionStatusNotification::NewPeer(*peer_b, Multiaddr::empty()),
     );
-    smp.deliver_message(&peer_a);
+    smp.deliver_message(&peer_a, 1);
 
     // add txn1 to Mempool
     smp.add_txns(&peer_a, vec![TestTransaction::new(1, 1, 1)]);
     // txn1 unlocked txn2. Now all transactions can go through in correct order
-    let txn = &smp.deliver_message(&peer_a).0;
+    let txn = &smp.deliver_message(&peer_a, 1).0;
     assert_eq!(txn.get(0).unwrap().sequence_number(), 1);
-    let txn = &smp.deliver_message(&peer_a).0;
+    let txn = &smp.deliver_message(&peer_a, 1).0;
     assert_eq!(txn.get(0).unwrap().sequence_number(), 2);
 }
 
@@ -595,13 +604,13 @@ fn test_broadcast_self_transactions() {
     );
 
     // A sends txn to B
-    smp.deliver_message(&peer_a);
+    smp.deliver_message(&peer_a, 1);
 
     // add new txn to B
     smp.add_txns(&peer_b, vec![TestTransaction::new(1, 0, 1)]);
 
     // verify that A will receive only second transaction from B
-    let (txn, _) = smp.deliver_message(&peer_b);
+    let (txn, _) = smp.deliver_message(&peer_b, 1);
     assert_eq!(
         txn.get(0).unwrap().sender(),
         TestTransaction::get_address(1)
@@ -631,12 +640,12 @@ fn test_broadcast_dependencies() {
     );
 
     // B receives 0
-    smp.deliver_message(&peer_a);
+    smp.deliver_message(&peer_a, 1);
     // now B can broadcast 1
-    let txn = smp.deliver_message(&peer_b).0;
+    let txn = smp.deliver_message(&peer_b, 1).0;
     assert_eq!(txn.get(0).unwrap().sequence_number(), 1);
     // now A can broadcast 2
-    let txn = smp.deliver_message(&peer_a).0;
+    let txn = smp.deliver_message(&peer_a, 1).0;
     assert_eq!(txn.get(0).unwrap().sequence_number(), 2);
 }
 
@@ -659,7 +668,7 @@ fn test_broadcast_updated_transaction() {
     );
 
     // B receives 0
-    let txn = smp.deliver_message(&peer_a).0;
+    let txn = smp.deliver_message(&peer_a, 1).0;
     assert_eq!(txn.get(0).unwrap().sequence_number(), 0);
     assert_eq!(txn.get(0).unwrap().gas_unit_price(), 1);
 
@@ -667,7 +676,7 @@ fn test_broadcast_updated_transaction() {
     smp.add_txns(&peer_a, vec![TestTransaction::new(0, 0, 5)]);
 
     // trigger send from A to B and check B has updated gas price for sequence 0
-    let txn = smp.deliver_message(&peer_a).0;
+    let txn = smp.deliver_message(&peer_a, 1).0;
     assert_eq!(txn.get(0).unwrap().sequence_number(), 0);
     assert_eq!(txn.get(0).unwrap().gas_unit_price(), 5);
 }
@@ -798,7 +807,7 @@ fn test_broadcast_ack_single_account_single_peer() {
     let mut remaining_txn_index = batch_size;
     while remaining_txn_index < all_txns.len() + 1 {
         // deliver message
-        let (_transactions, recipient) = smp.deliver_message(&full_node);
+        let (_transactions, recipient) = smp.deliver_message(&full_node, 1);
         assert_eq!(validator, recipient);
 
         // check that txns on FN have been GC'ed
@@ -839,7 +848,7 @@ fn test_broadcast_ack_multiple_accounts_single_peer() {
     );
 
     // deliver message
-    let (_transactions, recipient) = smp.deliver_message(&full_node);
+    let (_transactions, recipient) = smp.deliver_message(&full_node, 1);
     assert_eq!(validator, recipient);
 
     // check that txns have been GC'ed
@@ -908,7 +917,7 @@ fn test_k_policy_broadcast_no_fallback() {
     smp.add_txns(&fn_0, vec![TestTransaction::new(1, 0, 1)]);
 
     // make sure it delivers txn to primary peer
-    let peers = vec![smp.deliver_message(&fn_0).1];
+    let peers = vec![smp.deliver_message(&fn_0, 2).1];
     assert_eq!(peers[0], v_0);
     // check that no messages have been sent to fallback upstream peer
     smp.assert_no_message_sent(&fn_0_fallback_network_id);
@@ -1017,7 +1026,7 @@ fn test_k_policy_broadcast_not_enough_fallbacks() {
     smp.add_txns(&fn_0, vec![TestTransaction::new(1, 0, 1)]);
 
     // make sure it delivers txn to primary peer
-    let peers = vec![smp.deliver_message(&fn_0).1];
+    let peers = vec![smp.deliver_message(&fn_0, 1).1];
     assert_eq!(peers[0], v_0);
     // check that no messages have been sent to fallback upstream peer
     smp.assert_no_message_sent(&fn_0_fallback_network_id);
