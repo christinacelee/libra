@@ -68,6 +68,10 @@ fn main() {
     }
 
     let libra_root_key_path = &validator_swarm.config.libra_root_key_path;
+    let validators_config_path = &validator_swarm.config.config_files;
+
+    println!("libra root key path: {:?}, validator config path: {:?}", libra_root_key_path, validators_config_path);
+
     let validator_config = NodeConfig::load(&validator_swarm.config.config_files[0]).unwrap();
     let waypoint = validator_config.base.waypoint.waypoint();
 

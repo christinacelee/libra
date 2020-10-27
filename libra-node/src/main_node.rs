@@ -83,6 +83,10 @@ fn setup_debug_interface(config: &NodeConfig) -> NodeDebugService {
     NodeDebugService::new(addr)
 }
 
+pub fn fake() {
+    println!("in MAIN NODE YAY");
+}
+
 pub fn setup_environment(node_config: &NodeConfig) -> LibraHandle {
     let metrics_port = node_config.debug_interface.metrics_server_port;
     let metric_host = node_config.debug_interface.address.clone();
